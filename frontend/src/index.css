@@ -1,0 +1,196 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: 'Inter', system-ui, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color-scheme: dark;
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #0f172a;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1e293b;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(135deg, #0ea5e9, #d946ef);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(135deg, #38bdf8, #e879f9);
+}
+
+/* Utility classes */
+@layer utilities {
+  .text-gradient {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-primary-400 via-accent-400 to-primary-400;
+  }
+
+  .bg-glass {
+    @apply bg-dark-900/60 backdrop-blur-xl border border-dark-700/50;
+  }
+
+  .bg-glass-light {
+    @apply bg-dark-800/40 backdrop-blur-lg border border-dark-700/30;
+  }
+
+  .btn-primary {
+    @apply px-6 py-3 rounded-xl font-semibold text-white 
+           bg-gradient-to-r from-primary-500 to-accent-500 
+           hover:from-primary-400 hover:to-accent-400 
+           transform hover:scale-105 transition-all duration-300
+           shadow-lg hover:shadow-primary-500/25;
+  }
+
+  .btn-secondary {
+    @apply px-6 py-3 rounded-xl font-semibold 
+           bg-dark-800 border border-dark-600 
+           hover:border-primary-500 hover:bg-dark-700
+           transform hover:scale-105 transition-all duration-300;
+  }
+
+  .card {
+    @apply bg-glass rounded-2xl p-6 shadow-xl;
+  }
+
+  .input-field {
+    @apply w-full px-4 py-3 rounded-xl bg-dark-800/50 border border-dark-600 
+           focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 
+           outline-none transition-all duration-300
+           placeholder:text-dark-400;
+  }
+
+  .animate-in {
+    animation: animateIn 0.5s ease-out forwards;
+  }
+}
+
+@keyframes animateIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Chat message animations */
+.message-enter {
+  animation: messageEnter 0.4s ease-out forwards;
+}
+
+@keyframes messageEnter {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Typing indicator */
+.typing-indicator {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+}
+
+.typing-indicator span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0ea5e9, #d946ef);
+  animation: typing 1.4s infinite ease-in-out;
+}
+
+.typing-indicator span:nth-child(1) { animation-delay: 0s; }
+.typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+.typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typing {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-8px); }
+}
+
+/* Progress bar animation */
+.progress-bar {
+  background: linear-gradient(90deg, #0ea5e9, #d946ef, #0ea5e9);
+  background-size: 200% 100%;
+  animation: progressGradient 2s linear infinite;
+}
+
+@keyframes progressGradient {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+/* Floating orbs background */
+.orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(60px);
+  opacity: 0.3;
+  animation: float 20s infinite ease-in-out;
+}
+
+.orb-1 {
+  width: 400px;
+  height: 400px;
+  background: #0ea5e9;
+  top: -100px;
+  right: -100px;
+  animation-delay: 0s;
+}
+
+.orb-2 {
+  width: 300px;
+  height: 300px;
+  background: #d946ef;
+  bottom: -50px;
+  left: -50px;
+  animation-delay: -5s;
+}
+
+.orb-3 {
+  width: 200px;
+  height: 200px;
+  background: #22d3ee;
+  top: 50%;
+  left: 50%;
+  animation-delay: -10s;
+}
