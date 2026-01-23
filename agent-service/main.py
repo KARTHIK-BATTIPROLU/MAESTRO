@@ -2,17 +2,23 @@
 MAESTRO Agent Service - FastAPI Server
 MSME Inventory Intelligence System - Multi-Agent Decision Engine
 
-5-AGENT PIPELINE:
-1. Router/Intake Agent - Extract structured signals
-2. Research Agent - External risk modifiers
-3. Warehouse Agent - Feasibility constraints
-4. Decision Agent - Correlated recommendation
-5. Orchestrator Agent - Final user output
+UNIFIED 6-AGENT PIPELINE:
+1. Router/Context-Summarization Agent - Extract structured business context
+2. External Risk Scout Agent - Bounded risk modifiers [-0.2, +0.3]
+3. Risk Assessment Agent [DETERMINISTIC] - Weighted composite (0.35+0.35+0.30)
+4. Policy Agent [DETERMINISTIC] - Buffer policy (warehouse>buffer, cash only reduces)
+5. Warehouse Capacity Agent [DETERMINISTIC] - Hard constraints (≥0.75 → split)
+6. Decision Orchestrator Agent - Final explainable recommendation
 
-DETERMINISTIC PIPELINE:
-- Pure rule-based inventory decisions
-- No LLM required for core decisions
-- POST /process-inventory-decision
+PIPELINE MODES:
+- /process-inventory-decision   → Pure deterministic (NO LLM)
+- /process-unified              → Unified 6-agent pipeline (HYBRID: LLM + deterministic)
+- /process                      → Session-based full pipeline
+
+HARD CONSTRAINT PRIORITY:
+- Warehouse capacity ALWAYS overrides buffer intent
+- Cash risk can REDUCE buffer, never increase it
+- External modifiers bounded to [-0.2, +0.3]
 """
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
@@ -36,7 +42,7 @@ from orchestrator import (
 app = FastAPI(
     title="MAESTRO Agent Service",
     description="MSME Inventory Intelligence System - AI-powered inventory optimization",
-    version="1.0.0"
+    version="2.0.0"
 )
 
 # Enable CORS
@@ -88,23 +94,63 @@ class InventoryDecisionRequest(BaseModel):
         seasonal_event: Whether a seasonal event is expected (holiday, festival)
         supplier_delay: Level of supplier delays ("none", "minor", "frequent", "major")
         external_disruption: Whether external disruptions exist (strikes, weather)
-        current_stock: Current inventory level (units)
-        max_capacity: Maximum warehouse capacity (units)
+        current_stock: Current inventory level (units) - OPTIONAL if business_state provided
+        max_capacity: Maximum warehouse capacity (units) - OPTIONAL if business_state provided
         cash_flow: Cash flow status ("healthy", "tight", "critical")
+        business_state: Live business state from MongoDB (optional, for data-driven decisions)
     """
     demand_type: str
     seasonal_event: bool
     supplier_delay: str
     external_disruption: bool
-    current_stock: int
-    max_capacity: int
+    current_stock: Optional[int] = None
+    max_capacity: Optional[int] = None
     cash_flow: str
+    business_id: Optional[str] = None
+    business_state: Optional[Dict[str, Any]] = None
 
 class AgentOutputResponse(BaseModel):
     session_id: str
     status: str
     results: Optional[Dict[str, Any]]
     summary: Optional[Dict[str, Any]]
+
+
+# =============================================================================
+# UNIFIED PIPELINE REQUEST MODEL
+# =============================================================================
+
+class UnifiedPipelineRequest(BaseModel):
+    """
+    Request model for the unified 6-agent pipeline.
+    
+    Supports two input formats:
+    1. Onboarding answers (q1-q10 from session)
+    2. Structured business context (from API callers)
+    
+    Optional flag to control pipeline mode:
+    - use_deterministic_core: If True (default), uses rule-based logic for
+      risk assessment, policy, and warehouse stages. LLM only for understanding.
+      If False, uses LLM for all stages (slower, less predictable).
+    """
+    # Option 1: Onboarding answers
+    answers: Optional[Dict[str, str]] = None
+    
+    # Option 2: Structured inputs (for direct API calls)
+    business_type: Optional[str] = None
+    products: Optional[str] = None
+    demand_pattern: Optional[str] = None  # steady, seasonal, volatile
+    seasonal_event: Optional[bool] = None
+    supplier_reliability: Optional[str] = None  # reliable, occasional_delays, frequent_delays
+    delay_duration: Optional[str] = None  # days, weeks
+    storage_situation: Optional[str] = None  # comfortable, tight, critical
+    cash_flow_status: Optional[str] = None  # healthy, tight, critical
+    has_inventory_system: Optional[bool] = None
+    primary_goal: Optional[str] = None
+    
+    # Pipeline mode flag
+    use_deterministic_core: bool = True
+
 
 # API Endpoints
 
@@ -147,14 +193,18 @@ async def process_inventory_decision(request: InventoryDecisionRequest):
     It converts business inputs into risk signals and produces a 
     structured inventory recommendation.
     
+    NOW ENHANCED: Accepts live business_state from MongoDB for
+    data-driven decisions using REAL operational data.
+    
     Request Body:
         - demand_type: "steady" | "seasonal" | "volatile"
         - seasonal_event: true | false
         - supplier_delay: "none" | "minor" | "frequent" | "major"
         - external_disruption: true | false
-        - current_stock: integer (units)
-        - max_capacity: integer (units)
+        - current_stock: integer (units) - OPTIONAL if business_state provided
+        - max_capacity: integer (units) - OPTIONAL if business_state provided
         - cash_flow: "healthy" | "tight" | "critical"
+        - business_state: Live business state from MongoDB (optional)
     
     Response:
         - success: boolean
@@ -162,6 +212,7 @@ async def process_inventory_decision(request: InventoryDecisionRequest):
         - explanation: Human-readable recommendation
         - confidence: float (0.0-1.0)
         - risk_profile: Detailed risk breakdown
+        - data_source: "live" | "payload" indicating data origin
     
     Example:
         POST /process-inventory-decision
@@ -172,7 +223,8 @@ async def process_inventory_decision(request: InventoryDecisionRequest):
             "external_disruption": false,
             "current_stock": 60,
             "max_capacity": 100,
-            "cash_flow": "tight"
+            "cash_flow": "tight",
+            "business_state": { ... }
         }
     """
     try:
@@ -184,7 +236,8 @@ async def process_inventory_decision(request: InventoryDecisionRequest):
             "external_disruption": request.external_disruption,
             "current_stock": request.current_stock,
             "max_capacity": request.max_capacity,
-            "cash_flow": request.cash_flow
+            "cash_flow": request.cash_flow,
+            "business_state": request.business_state,
         }
         
         # Run the deterministic MAESTRO pipeline
@@ -202,6 +255,122 @@ async def process_inventory_decision(request: InventoryDecisionRequest):
             status_code=500,
             detail="An error occurred while processing your inventory decision. Please try again."
         )
+
+
+# =============================================================================
+# UNIFIED 6-AGENT PIPELINE ENDPOINT
+# =============================================================================
+
+@app.post("/process-unified")
+async def process_unified_pipeline(request: UnifiedPipelineRequest):
+    """
+    Process inventory decision through the UNIFIED 6-agent MAESTRO pipeline.
+    
+    This endpoint runs the complete pipeline:
+    1. Router Agent [LLM] → structured business context
+    2. Signal Conversion [DETERMINISTIC] → numeric internal risk signals
+    3. External Risk Scout [LLM] → bounded modifiers [-0.2, +0.3]
+    4. Risk Assessment [DETERMINISTIC] → composite risk + level
+    5. Policy Agent [DETERMINISTIC] → buffer policy
+    6. Warehouse Agent [DETERMINISTIC] → feasibility & execution mode
+    7. Decision Orchestrator [LLM] → final JSON output
+    
+    HARD CONSTRAINT PRIORITY:
+    - Warehouse capacity (≥0.75) → SPLIT_DELIVERIES (non-negotiable)
+    - Cash risk (≥0.7) → reduce buffer by one level (never increase)
+    
+    Request Body Options:
+        Option 1 - Onboarding Answers:
+            {
+                "answers": {
+                    "q1": "...", "q2": "...", ..., "q10": "..."
+                },
+                "use_deterministic_core": true
+            }
+        
+        Option 2 - Structured Inputs:
+            {
+                "business_type": "retail",
+                "products": "clothing",
+                "demand_pattern": "seasonal",
+                "seasonal_event": true,
+                "supplier_reliability": "occasional_delays",
+                "delay_duration": "weeks",
+                "storage_situation": "tight",
+                "cash_flow_status": "healthy",
+                "has_inventory_system": false,
+                "primary_goal": "prevent stockouts",
+                "use_deterministic_core": true
+            }
+    
+    Response:
+        {
+            "success": true,
+            "pipeline": "full",
+            "raw_answers": {...},
+            "stages": {
+                "context_summary": {...},
+                "internal_risks": {...},
+                "external_risks": {...},
+                "risk_assessment": {...},
+                "buffer_policy": {...},
+                "warehouse_assessment": {...},
+                "final_output": {...}
+            },
+            "result": {
+                "final_decision": {...},
+                "what_we_understood": {...},
+                "detected_risks": [...],
+                "why_this_decision": "...",
+                "immediate_actions": [...]
+            }
+        }
+    """
+    try:
+        # Prepare user_responses from either format
+        if request.answers:
+            # Option 1: Direct onboarding answers
+            user_responses = request.answers
+        else:
+            # Option 2: Convert structured inputs to q1-q10 format
+            user_responses = _convert_structured_to_answers(request)
+        
+        # Run the unified pipeline
+        result = run_full_pipeline(
+            user_responses=user_responses,
+            use_deterministic_core=request.use_deterministic_core
+        )
+        
+        return result
+        
+    except Exception as e:
+        print(f"❌ Error in /process-unified: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"Pipeline error: {str(e)}"
+        )
+
+
+def _convert_structured_to_answers(request: UnifiedPipelineRequest) -> Dict[str, str]:
+    """
+    Convert structured API inputs to q1-q10 onboarding answer format.
+    This ensures compatibility with the Router Agent's expected input.
+    """
+    return {
+        "q1": request.products or request.business_type or "general goods",
+        "q2": request.demand_pattern or "steady",
+        "q3": "yes" if request.seasonal_event else "no",
+        "q4": request.supplier_reliability or "reliable",
+        "q5": request.delay_duration or "days",
+        "q6": "",  # External disruptions - inferred
+        "q7": request.storage_situation or "comfortable",
+        "q8": request.cash_flow_status or "healthy",
+        "q9": "yes" if request.has_inventory_system else "no",
+        "q10": request.primary_goal or "optimize inventory"
+    }
 
 
 @app.get("/questions")

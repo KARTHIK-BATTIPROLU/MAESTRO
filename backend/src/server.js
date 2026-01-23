@@ -10,6 +10,7 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const config = require('./config');
 const apiRoutes = require('./routes/api');
+const { connectDB } = require('./db/connection');
 
 // Initialize Express app
 const app = express();
@@ -83,8 +84,23 @@ app.use((err, req, res, next) => {
 
 // Start server
 const PORT = config.port;
-app.listen(PORT, () => {
-  console.log(`
+
+async function startServer() {
+  // Connect to MongoDB first (if configured)
+  if (config.dbEnabled) {
+    try {
+      await connectDB();
+    } catch (error) {
+      console.error('❌ Failed to connect to MongoDB:', error.message);
+      console.warn('⚠️  Server starting without database connection');
+    }
+  } else {
+    console.log('ℹ️  MongoDB not configured (MONGODB_URI not set)');
+  }
+
+  // Start Express server AFTER DB connection
+  app.listen(PORT, () => {
+    console.log(`
 ╔══════════════════════════════════════════════════════════════╗
 ║                                                              ║
 ║   🚀 MOSTRO Backend Server                                   ║
@@ -92,9 +108,13 @@ app.listen(PORT, () => {
 ║   Server running on: http://localhost:${PORT}                   ║
 ║   Environment: ${config.nodeEnv.padEnd(10)}                              ║
 ║   Agent Service: ${config.agentServiceUrl}               ║
+║   Database: ${config.dbEnabled ? 'Connected' : 'Disabled'}                                    ║
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝
-  `);
-});
+    `);
+  });
+}
+
+startServer();
 
 module.exports = app;

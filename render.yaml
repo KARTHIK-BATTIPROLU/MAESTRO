@@ -1,0 +1,42 @@
+services:
+  # Backend Service
+  - type: web
+    name: mostro-backend
+    runtime: node
+    buildCommand: cd backend && npm install
+    startCommand: cd backend && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 5000
+      - key: MONGODB_URI
+        sync: false
+      - key: AGENT_SERVICE_URL
+        fromService:
+          type: web
+          name: mostro-agent-service
+          property: host
+
+  # Agent Service
+  - type: web
+    name: mostro-agent-service
+    runtime: python
+    buildCommand: cd agent-service && pip install -r requirements.txt
+    startCommand: cd agent-service && uvicorn main:app --host 0.0.0.0 --port 8000
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+
+  # Frontend Service
+  - type: web
+    name: mostro-frontend
+    runtime: node
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: mostro-backend
+          property: host

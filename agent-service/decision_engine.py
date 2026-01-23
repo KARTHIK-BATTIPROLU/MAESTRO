@@ -450,10 +450,16 @@ def build_decision_explanation(risk_inputs: dict, decision: dict) -> str:
     # ==========================================================================
     constraint_explanation = ""
     
-    # Warehouse constraint takes priority
-    if "warehouse_high" in detected_risks and order_strategy == "SPLIT_ORDERS":
+    # Lead time override takes priority (can only pull earlier)
+    lead_time_override_applied = risk_inputs.get("lead_time_override_applied", False)
+    effective_lead_time_days = risk_inputs.get("effective_lead_time_days")
+    
+    if lead_time_override_applied and effective_lead_time_days is not None:
+        constraint_explanation = f"Supplier lead times of ~{effective_lead_time_days:.0f} days influenced earlier ordering."
+    # Warehouse constraint is secondary
+    elif "warehouse_high" in detected_risks and order_strategy == "SPLIT_ORDERS":
         constraint_explanation = "Storage limitations prevent bulk ordering."
-    # Cash constraint is secondary
+    # Cash constraint is tertiary
     elif "cash_high" in detected_risks and order_strategy == "FREQUENT_SMALL":
         constraint_explanation = "Cash flow constraints favor smaller, frequent orders."
     
@@ -461,9 +467,12 @@ def build_decision_explanation(risk_inputs: dict, decision: dict) -> str:
     # Part 5: Build recommendation justification
     # ==========================================================================
     
-    # Timing justification
+    # Timing justification (enhanced with lead time context)
     if reorder_timing == "EARLY":
-        timing_reason = "reordering early builds a safety buffer against disruptions"
+        if lead_time_override_applied and effective_lead_time_days is not None:
+            timing_reason = f"reordering early accounts for the {effective_lead_time_days:.0f}-day effective lead time"
+        else:
+            timing_reason = "reordering early builds a safety buffer against disruptions"
     elif reorder_timing == "DELAYED":
         timing_reason = "delaying reorders optimizes costs given the low risk"
     else:
@@ -481,6 +490,49 @@ def build_decision_explanation(risk_inputs: dict, decision: dict) -> str:
     recommendation = f"Therefore, {timing_reason}, and {strategy_reason}."
     
     # ==========================================================================
+    # Part 5b: Build quantity explanation (if available)
+    # ==========================================================================
+    quantity_explanation = ""
+    quantity_context = risk_inputs.get("quantity_context")
+    
+    if quantity_context:
+        avg_daily = quantity_context.get("avg_daily_sales", 0)
+        lead_time = quantity_context.get("effective_lead_time_days", 0)
+        qty_range = quantity_context.get("recommended_quantity_range", {})
+        lower = qty_range.get("lower", 0)
+        upper = qty_range.get("upper", 0)
+        warehouse_constrained = quantity_context.get("warehouse_constrained", False)
+        
+        if avg_daily > 0 and lead_time > 0 and lower > 0:
+            quantity_explanation = f"Based on average sales of {avg_daily:.0f}/day and supplier lead time of {lead_time:.0f} days, we recommend ordering {lower}-{upper} units."
+            
+            if warehouse_constrained:
+                available = quantity_context.get("available_space", 0)
+                quantity_explanation += f" (Note: Quantity limited by available warehouse space of {available:.0f} units.)"
+    
+    # ==========================================================================
+    # Part 5c: Build reorder point explanation (if available)
+    # ==========================================================================
+    reorder_point_explanation = ""
+    reorder_point_context = risk_inputs.get("reorder_point_context")
+    
+    if reorder_point_context:
+        rop_units = reorder_point_context.get("reorder_point_units", 0)
+        days_cover = reorder_point_context.get("days_of_cover_left", 0)
+        rop_status = reorder_point_context.get("status", "")
+        rop_action = reorder_point_context.get("action", "")
+        current = reorder_point_context.get("current_stock", 0)
+        
+        if rop_units > 0:
+            reorder_point_explanation = f"Your reorder point is {rop_units} units. At current sales, you have ~{days_cover:.0f} days of cover."
+            
+            # Add status-specific message
+            if rop_status == "BELOW":
+                reorder_point_explanation += f" ⚠️ Your stock ({current:.0f}) is BELOW the reorder point—reorder now."
+            elif rop_status == "NEAR":
+                reorder_point_explanation += f" Your stock ({current:.0f}) is approaching the reorder point—prepare to order soon."
+    
+    # ==========================================================================
     # Part 6: Assemble final explanation
     # ==========================================================================
     
@@ -491,6 +543,14 @@ def build_decision_explanation(risk_inputs: dict, decision: dict) -> str:
         parts.append(constraint_explanation)
     
     parts.append(recommendation)
+    
+    # Add quantity explanation
+    if quantity_explanation:
+        parts.append(quantity_explanation)
+    
+    # Add reorder point explanation
+    if reorder_point_explanation:
+        parts.append(reorder_point_explanation)
     
     # Join with spaces, clean up any double spaces
     explanation = " ".join(parts)

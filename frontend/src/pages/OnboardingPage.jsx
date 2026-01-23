@@ -11,6 +11,7 @@ import {
   CheckCircle2
 } from 'lucide-react';
 import apiService from '../services/api';
+import { aggregateContext, deriveDecisionPayload } from '../utils/contextAggregator';
 
 const OnboardingPage = ({ sessionData, setSessionData, setResults }) => {
   const navigate = useNavigate();
@@ -101,6 +102,27 @@ const OnboardingPage = ({ sessionData, setSessionData, setResults }) => {
         // Store answers for dashboard
         const allAnswers = { ...userAnswers, [currentQuestion.key]: answer };
         localStorage.setItem('maestro_answers', JSON.stringify(allAnswers));
+        
+        // STEP 1: Create and store aggregated session backup in localStorage
+        // This enables recovery if backend session is lost (e.g., after backend restart)
+        try {
+          const aggregatedContext = aggregateContext(allAnswers);
+          const decisionPayload = deriveDecisionPayload(aggregatedContext);
+          
+          const sessionBackup = {
+            timestamp: new Date().toISOString(),
+            answers: allAnswers,
+            context: aggregatedContext,
+            payload: decisionPayload,
+            businessName: allAnswers.q1 || 'Your Business'
+          };
+          
+          localStorage.setItem('maestro_session_backup', JSON.stringify(sessionBackup));
+          console.log('✅ Session backup created for recovery mode');
+        } catch (err) {
+          console.error('⚠️ Failed to create session backup:', err);
+          // Non-critical failure - continue anyway
+        }
         
         // Option 1: Go directly to dashboard with mock data (fast)
         addMessage('bot', "✨ Perfect! Taking you to your personalized dashboard...");

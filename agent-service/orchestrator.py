@@ -2,17 +2,25 @@
 MAESTRO - MSME Inventory Intelligence System
 Production Orchestrator - Multi-Agent Pipeline
 
-PIPELINE FLOW:
-1. Router/Intake Agent → Structured Signals
-2. Research Agent → External Risk Modifiers  
-3. Warehouse Agent → Feasibility Constraints
-4. Decision Agent → Correlated Recommendation
-5. Orchestrator Agent → Final User Output
+UNIFIED PIPELINE FLOW (run_full_pipeline):
+0. Raw Data Preservation → Single Source of Truth
+1. Router Agent [LLM] → structured business context
+2. Signal Conversion [DETERMINISTIC] → numeric internal risk signals
+3. External Risk Scout [LLM] → bounded modifiers [-0.2, +0.3]
+4. Risk Assessment [DETERMINISTIC] → composite risk score + level
+5. Policy Agent [DETERMINISTIC] → buffer policy
+6. Warehouse Agent [DETERMINISTIC] → feasibility & execution mode
+7. Decision Orchestrator [LLM] → final JSON output
 
 DETERMINISTIC PIPELINE (run_maestro_pipeline):
 - Pure rule-based decision engine
 - No LLM calls required
 - Predictable, explainable outputs
+
+HARD CONSTRAINT PRIORITY:
+- Warehouse capacity ALWAYS overrides buffer intent
+- Cash risk can REDUCE buffer, never increase it
+- External modifiers are bounded [-0.2, +0.3]
 """
 import json
 import re
@@ -23,6 +31,8 @@ from agents import get_all_agents
 from tasks import (
     create_intake_analysis_task,
     create_external_risk_task,
+    create_risk_assessment_task,
+    create_policy_task,
     create_warehouse_assessment_task,
     create_inventory_decision_task,
     create_orchestrator_task
@@ -32,6 +42,183 @@ from config import Config
 # Import deterministic decision engine components
 from risk_signals import build_risk_profile
 from inventory_decision_agent import run_inventory_decision_agent
+
+
+# =============================================================================
+# RAW DATA PRESERVATION - SINGLE SOURCE OF TRUTH
+# =============================================================================
+
+def preserve_raw_answers(user_responses: dict) -> dict:
+    """
+    Preserve raw onboarding answers as the SINGLE SOURCE OF TRUTH.
+    
+    This function treats the 10 onboarding answers as immutable data.
+    It does NOT:
+    - Modify any answers
+    - Infer missing information
+    - Optimize or clean data
+    - Add assumptions
+    - Make decisions
+    
+    It ONLY:
+    - Structures the data in q1-q10 format
+    - Preserves the business owner's exact wording
+    - Makes this data available to all downstream agents
+    
+    Args:
+        user_responses: Raw answers from onboarding (various key formats)
+        
+    Returns:
+        Dictionary with keys q1-q10 containing exact original answers
+        
+    Example:
+        >>> raw = {"business_context": "Flower trading"}
+        >>> preserve_raw_answers(raw)
+        {"q1": "Flower trading", "q2": "", ...}
+    """
+    # Key mapping from named keys to q1-q10 format
+    KEY_MAP = {
+        'business_context': 'q1',
+        'inventory_decision_method': 'q2',
+        'stock_issues': 'q3',
+        'supplier_reliability': 'q4',
+        'demand_variability': 'q5',
+        'reorder_timing_issues': 'q6',
+        'warehouse_constraints': 'q7',
+        'cash_flow_impact': 'q8',
+        'system_limitations': 'q9',
+        'desired_outcome': 'q10'
+    }
+    
+    # Initialize with empty strings (no assumptions)
+    preserved = {
+        'q1': '',
+        'q2': '',
+        'q3': '',
+        'q4': '',
+        'q5': '',
+        'q6': '',
+        'q7': '',
+        'q8': '',
+        'q9': '',
+        'q10': ''
+    }
+    
+    # Preserve exact answers without modification
+    for key, value in user_responses.items():
+        # Handle q1-q10 format directly
+        if key.lower().startswith('q') and key[1:].isdigit():
+            q_key = f"q{key[1:]}"
+            if q_key in preserved:
+                preserved[q_key] = str(value) if value is not None else ''
+        # Handle named key format
+        elif key in KEY_MAP:
+            preserved[KEY_MAP[key]] = str(value) if value is not None else ''
+        # Handle question_1 through question_10 format
+        elif key.startswith('question_') and key[9:].isdigit():
+            q_num = int(key[9:])
+            if 1 <= q_num <= 10:
+                preserved[f'q{q_num}'] = str(value) if value is not None else ''
+    
+    return preserved
+
+
+def get_raw_answer(preserved_data: dict, question_number: int) -> str:
+    """
+    Retrieve a specific raw answer by question number.
+    
+    Args:
+        preserved_data: Output from preserve_raw_answers()
+        question_number: 1-10
+        
+    Returns:
+        The exact raw answer string (empty string if not found)
+    """
+    if not 1 <= question_number <= 10:
+        return ''
+    return preserved_data.get(f'q{question_number}', '')
+
+
+# =============================================================================
+# DETERMINISTIC SIGNAL CONVERSION LAYER
+# =============================================================================
+
+def convert_context_to_signals(context_summary: dict) -> dict:
+    """
+    Deterministic signal conversion from categorical to numeric.
+    
+    Converts Router Agent categorical outputs to numeric risk signals
+    for the Decision Engine.
+    
+    RULES:
+    - NO LLM
+    - NO randomness
+    - Same input → same output
+    - Use fixed mappings only
+    
+    MAPPING:
+        LOW    → 0.3
+        MEDIUM → 0.6
+        HIGH   → 0.9
+    
+    INPUT (from Router Agent):
+        - demand_summary.risk_level
+        - supplier_summary.risk_level
+        - warehouse_summary.constraint_level
+        - financial_summary.cash_flow_sensitivity
+    
+    OUTPUT:
+        {
+            "demand_risk": float,
+            "supplier_risk": float,
+            "warehouse_stress": float,
+            "cash_risk": float
+        }
+    
+    Args:
+        context_summary: Output from Router/Context-Summarization Agent
+        
+    Returns:
+        Dictionary with numeric risk signals (0.0-1.0)
+    """
+    # FIXED MAPPING - Deterministic, no randomness
+    RISK_MAP = {
+        "low": 0.3,
+        "medium": 0.6,
+        "high": 0.9
+    }
+    
+    # Default value for missing/invalid inputs
+    DEFAULT = 0.6  # Medium risk assumption
+    
+    # Extract categorical values from context summary
+    demand_summary = context_summary.get('demand_summary', {})
+    supplier_summary = context_summary.get('supplier_summary', {})
+    warehouse_summary = context_summary.get('warehouse_summary', {})
+    financial_summary = context_summary.get('financial_summary', {})
+    
+    # Convert demand_summary.risk_level → demand_risk
+    demand_level = str(demand_summary.get('risk_level', 'medium')).lower().strip()
+    demand_risk = RISK_MAP.get(demand_level, DEFAULT)
+    
+    # Convert supplier_summary.risk_level → supplier_risk
+    supplier_level = str(supplier_summary.get('risk_level', 'medium')).lower().strip()
+    supplier_risk = RISK_MAP.get(supplier_level, DEFAULT)
+    
+    # Convert warehouse_summary.constraint_level → warehouse_stress
+    warehouse_level = str(warehouse_summary.get('constraint_level', 'medium')).lower().strip()
+    warehouse_stress = RISK_MAP.get(warehouse_level, DEFAULT)
+    
+    # Convert financial_summary.cash_flow_sensitivity → cash_risk
+    cash_level = str(financial_summary.get('cash_flow_sensitivity', 'medium')).lower().strip()
+    cash_risk = RISK_MAP.get(cash_level, DEFAULT)
+    
+    return {
+        "demand_risk": demand_risk,
+        "supplier_risk": supplier_risk,
+        "warehouse_stress": warehouse_stress,
+        "cash_risk": cash_risk
+    }
 
 
 # =============================================================================
@@ -46,15 +233,19 @@ def run_maestro_pipeline(input_context: dict) -> dict:
     It converts raw business inputs into structured risk signals,
     then produces a deterministic inventory decision.
     
+    NOW ENHANCED: Accepts business_state from MongoDB for live data-driven decisions.
+    Falls back to payload values when live data is unavailable.
+    
     Args:
         input_context: Dictionary containing:
             - demand_type (str): "steady", "seasonal", "volatile"
             - seasonal_event (bool): Whether seasonal event is expected
             - supplier_delay (str): "none", "minor", "frequent", "major"
             - external_disruption (bool): Whether external disruption exists
-            - current_stock (int): Current inventory level
-            - max_capacity (int): Maximum warehouse capacity
+            - current_stock (int): Current inventory level (OPTIONAL if business_state)
+            - max_capacity (int): Maximum warehouse capacity (OPTIONAL if business_state)
             - cash_flow (str): "healthy", "tight", "critical"
+            - business_state (dict): Live business state from MongoDB (OPTIONAL)
     
     Returns:
         Dictionary containing:
@@ -63,6 +254,7 @@ def run_maestro_pipeline(input_context: dict) -> dict:
             - explanation (str): Human-readable decision explanation
             - confidence (float): Decision confidence score (0.0-1.0)
             - risk_profile: Detailed risk breakdown
+            - data_source (str): "live" | "payload" | "mixed"
     
     Example:
         >>> context = {
@@ -72,7 +264,8 @@ def run_maestro_pipeline(input_context: dict) -> dict:
         ...     "external_disruption": False,
         ...     "current_stock": 60,
         ...     "max_capacity": 100,
-        ...     "cash_flow": "tight"
+        ...     "cash_flow": "tight",
+        ...     "business_state": { ... }
         ... }
         >>> result = run_maestro_pipeline(context)
         >>> result["final_decision"]["reorder_timing"]
@@ -82,15 +275,21 @@ def run_maestro_pipeline(input_context: dict) -> dict:
     print("🚀 MAESTRO DETERMINISTIC PIPELINE - Starting")
     print("="*60 + "\n")
     
+    # Check if we have live business state
+    has_business_state = input_context.get("business_state") is not None
+    print(f"📡 Live business_state available: {has_business_state}")
+    
     try:
         # ========================================
         # STAGE 1: BUILD RISK PROFILE
         # ========================================
-        print("📊 Stage 1: Building Risk Profile from inputs...")
+        print("\n📊 Stage 1: Building Risk Profile from inputs...")
         
         risk_profile = build_risk_profile(input_context)
         
-        print(f"✅ Risk Profile: demand={risk_profile['demand_risk']:.2f}, "
+        data_source = risk_profile.get("data_source", "payload")
+        print(f"✅ Risk Profile (data_source={data_source}): "
+              f"demand={risk_profile['demand_risk']:.2f}, "
               f"supplier={risk_profile['supplier_risk']:.2f}, "
               f"warehouse={risk_profile['warehouse_stress']:.2f}, "
               f"cash={risk_profile['cash_risk']:.2f}")
@@ -102,10 +301,34 @@ def run_maestro_pipeline(input_context: dict) -> dict:
         
         decision_result = run_inventory_decision_agent(risk_profile)
         
+        # Extract lead time context
+        lead_time_context = decision_result.get("lead_time_context", {})
+        effective_lead_time = lead_time_context.get("effective_lead_time_days")
+        lead_time_override = lead_time_context.get("lead_time_override_applied", False)
+        
+        # Extract quantity context
+        quantity_context = decision_result.get("quantity_context")
+        
+        # Extract reorder point context
+        reorder_point_context = decision_result.get("reorder_point_context")
+        
         print(f"✅ Decision: {decision_result['final_decision']['reorder_timing']} + "
               f"{decision_result['final_decision']['order_strategy']} "
               f"(Risk: {decision_result['final_decision']['risk_level']}, "
               f"Confidence: {decision_result['confidence']:.2f})")
+        
+        if lead_time_override:
+            print(f"   ⚡ Lead time override applied: effective_lead_time={effective_lead_time}d >= 7d")
+        
+        if quantity_context:
+            qty_range = quantity_context.get("recommended_quantity_range", {})
+            print(f"   📦 Recommended quantity: {qty_range.get('lower', 0)}-{qty_range.get('upper', 0)} units")
+        
+        if reorder_point_context:
+            rop = reorder_point_context.get("reorder_point_units", 0)
+            rop_status = reorder_point_context.get("status", "")
+            days_cover = reorder_point_context.get("days_of_cover_left", 0)
+            print(f"   🎯 Reorder Point: {rop} units (status: {rop_status}, {days_cover} days cover)")
         
         print("\n" + "="*60)
         print("✅ MAESTRO DETERMINISTIC PIPELINE COMPLETE")
@@ -117,11 +340,24 @@ def run_maestro_pipeline(input_context: dict) -> dict:
         return {
             "success": True,
             "pipeline": "deterministic",
+            "data_source": data_source,
             "final_decision": decision_result["final_decision"],
             "explanation": decision_result["explanation"],
             "confidence": decision_result["confidence"],
-            "risk_profile": risk_profile,
-            "input_context": input_context
+            "risk_profile": {
+                "demand_risk": risk_profile["demand_risk"],
+                "supplier_risk": risk_profile["supplier_risk"],
+                "warehouse_stress": risk_profile["warehouse_stress"],
+                "cash_risk": risk_profile["cash_risk"],
+                "effective_lead_time_days": risk_profile.get("effective_lead_time_days"),
+            },
+            "lead_time_context": lead_time_context,
+            "quantity_context": quantity_context,
+            "reorder_point_context": reorder_point_context,
+            "input_context": {
+                k: v for k, v in input_context.items() 
+                if k != "business_state"  # Don't echo back full business_state
+            }
         }
         
     except Exception as e:
@@ -129,6 +365,7 @@ def run_maestro_pipeline(input_context: dict) -> dict:
         return {
             "success": False,
             "pipeline": "deterministic",
+            "data_source": "error",
             "error": str(e),
             "final_decision": {
                 "reorder_timing": "NORMAL",
@@ -138,7 +375,10 @@ def run_maestro_pipeline(input_context: dict) -> dict:
             "explanation": "Unable to process inputs. Defaulting to standard recommendation.",
             "confidence": 0.5,
             "risk_profile": {},
-            "input_context": input_context
+            "input_context": {
+                k: v for k, v in input_context.items() 
+                if k != "business_state"
+            }
         }
 
 
@@ -165,19 +405,44 @@ def extract_json_from_response(response_text: str) -> dict:
     return {}
 
 
-def run_full_pipeline(user_responses: dict) -> dict:
+def run_full_pipeline(user_responses: dict, use_deterministic_core: bool = True) -> dict:
     """
-    Execute the complete 5-agent MAESTRO pipeline.
+    Execute the complete 6-agent MAESTRO unified pipeline.
+    
+    PIPELINE STAGES:
+    0. Raw Data Preservation → Single Source of Truth (q1-q10)
+    1. Router Agent [LLM] → structured business context
+    2. Signal Conversion [DETERMINISTIC] → numeric internal risk signals
+    3. External Risk Scout [LLM] → bounded modifiers [-0.2, +0.3]
+    4. Risk Assessment [DETERMINISTIC] → composite risk score + level
+    5. Policy Agent [DETERMINISTIC] → buffer policy
+    6. Warehouse Agent [DETERMINISTIC] → feasibility & execution mode
+    7. Decision Orchestrator [LLM] → final JSON output
+    
+    HARD CONSTRAINT PRIORITY:
+    - Warehouse capacity ALWAYS overrides buffer intent
+    - Cash risk can REDUCE buffer, never increase it
+    - External modifiers are bounded [-0.2, +0.3]
     
     Args:
-        user_responses: Dict of user answers from onboarding
+        user_responses: Dict of user answers from onboarding (q1-q10 or named keys)
+        use_deterministic_core: If True, use rule-based logic for stages 4-6.
+                               If False, use LLM for all stages.
         
     Returns:
-        Final orchestrated recommendation
+        {
+            "success": bool,
+            "pipeline": "full",
+            "raw_answers": {...},
+            "stages": {...},  # Output from each stage
+            "result": {...}   # Final orchestrator output
+        }
     """
-    print("\n" + "="*60)
-    print("🚀 MAESTRO PIPELINE - Starting Full Analysis")
-    print("="*60 + "\n")
+    print("\n" + "="*70)
+    print("🚀 MAESTRO UNIFIED PIPELINE - Starting Full Analysis")
+    print("="*70)
+    print(f"   Mode: {'Hybrid (LLM + Deterministic)' if use_deterministic_core else 'Full LLM'}")
+    print("="*70 + "\n")
     
     # Initialize LLM
     llm = None
@@ -185,28 +450,44 @@ def run_full_pipeline(user_responses: dict) -> dict:
         llm = ChatGoogleGenerativeAI(
             model="gemini-1.5-flash",
             google_api_key=Config.GOOGLE_API_KEY,
-            temperature=0.3
+            temperature=0.2  # Lower temperature for more consistent outputs
         )
     
     if not llm:
         print("⚠️ No LLM configured - returning mock response")
-        return generate_mock_response(user_responses)
+        return {
+            "success": False,
+            "pipeline": "full",
+            "error": "No LLM configured",
+            "result": generate_mock_response(user_responses)["result"]
+        }
     
     # Get all agents
     agents = get_all_agents(llm)
     
-    # Accumulated analysis data
-    analysis_data = {}
+    # Accumulated stage outputs
+    stages = {}
     
     try:
-        # ========================================
-        # STAGE 1: INTAKE ANALYSIS
-        # ========================================
-        print("\n📋 STAGE 1: Router/Intake Agent - Extracting Signals...")
+        # ════════════════════════════════════════════════════════════════════
+        # STAGE 0: RAW DATA PRESERVATION - Single Source of Truth
+        # ════════════════════════════════════════════════════════════════════
+        print("\n📦 STAGE 0: Preserving Raw Answers as Single Source of Truth...")
+        
+        raw_answers = preserve_raw_answers(user_responses)
+        stages['raw_answers'] = raw_answers
+        
+        non_empty = {k: v for k, v in raw_answers.items() if v}
+        print(f"   ✅ Preserved {len(non_empty)} raw answers: {list(non_empty.keys())}")
+        
+        # ════════════════════════════════════════════════════════════════════
+        # STAGE 1: ROUTER AGENT [LLM] - Context Summarization
+        # ════════════════════════════════════════════════════════════════════
+        print("\n📋 STAGE 1: Router Agent - Understanding Business Context [LLM]...")
         
         intake_task = create_intake_analysis_task(
             agents["router_intake"],
-            user_responses
+            raw_answers
         )
         
         intake_crew = Crew(
@@ -217,26 +498,36 @@ def run_full_pipeline(user_responses: dict) -> dict:
         )
         
         intake_result = intake_crew.kickoff()
-        intake_signals = extract_json_from_response(intake_result.raw)
+        context_summary = extract_json_from_response(intake_result.raw)
         
-        print(f"✅ Intake signals extracted: {list(intake_signals.keys())}")
-        analysis_data['intake'] = intake_signals
-        analysis_data['business_context'] = intake_signals.get('business_context', {})
-        analysis_data['signals'] = {
-            'demand_variability': intake_signals.get('demand_variability', 0.5),
-            'supplier_delay_risk': intake_signals.get('supplier_delay_risk', 0.5),
-            'warehouse_capacity_stress': intake_signals.get('warehouse_capacity_stress', 0.5),
-            'cash_flow_sensitivity': intake_signals.get('cash_flow_sensitivity', 0.5)
-        }
+        # Validate context_summary has required fields
+        if not context_summary:
+            context_summary = _generate_default_context_summary(raw_answers)
         
-        # ========================================
-        # STAGE 2: EXTERNAL RISK ANALYSIS
-        # ========================================
-        print("\n🌐 STAGE 2: Research Agent - Analyzing External Factors...")
+        stages['context_summary'] = context_summary
+        print(f"   ✅ Context summary extracted: {list(context_summary.keys())}")
+        
+        # ════════════════════════════════════════════════════════════════════
+        # STAGE 2: SIGNAL CONVERSION [DETERMINISTIC]
+        # ════════════════════════════════════════════════════════════════════
+        print("\n🔢 STAGE 2: Signal Conversion - Categorical to Numeric [DETERMINISTIC]...")
+        
+        internal_risks = convert_context_to_signals(context_summary)
+        stages['internal_risks'] = internal_risks
+        
+        print(f"   ✅ Internal risks: demand={internal_risks['demand_risk']:.2f}, "
+              f"supplier={internal_risks['supplier_risk']:.2f}, "
+              f"warehouse={internal_risks['warehouse_stress']:.2f}, "
+              f"cash={internal_risks['cash_risk']:.2f}")
+        
+        # ════════════════════════════════════════════════════════════════════
+        # STAGE 3: EXTERNAL RISK SCOUT [LLM] - Bounded Modifiers
+        # ════════════════════════════════════════════════════════════════════
+        print("\n🌐 STAGE 3: External Risk Scout - Analyzing External Factors [LLM]...")
         
         external_task = create_external_risk_task(
             agents["research_risk"],
-            analysis_data['business_context']
+            context_summary
         )
         
         external_crew = Crew(
@@ -247,69 +538,126 @@ def run_full_pipeline(user_responses: dict) -> dict:
         )
         
         external_result = external_crew.kickoff()
-        external_signals = extract_json_from_response(external_result.raw)
+        external_risks = extract_json_from_response(external_result.raw)
         
-        print(f"✅ External factors analyzed")
-        analysis_data['external'] = external_signals
-        analysis_data['signals']['external_demand_risk_modifier'] = external_signals.get('external_demand_risk_modifier', 0)
-        analysis_data['signals']['external_lead_time_risk_modifier'] = external_signals.get('external_lead_time_risk_modifier', 0)
+        # Clamp external modifiers to bounds [-0.2, +0.3]
+        external_risks = _clamp_external_modifiers(external_risks)
+        stages['external_risks'] = external_risks
         
-        # ========================================
-        # STAGE 3: WAREHOUSE ASSESSMENT
-        # ========================================
-        print("\n🏭 STAGE 3: Warehouse Agent - Assessing Storage Constraints...")
+        print(f"   ✅ External modifiers: demand={external_risks.get('external_demand_risk_modifier', 0):.2f}, "
+              f"lead_time={external_risks.get('external_lead_time_risk_modifier', 0):.2f}")
         
-        warehouse_task = create_warehouse_assessment_task(
-            agents["warehouse"],
-            intake_signals
-        )
+        # ════════════════════════════════════════════════════════════════════
+        # STAGE 4: RISK ASSESSMENT [DETERMINISTIC]
+        # ════════════════════════════════════════════════════════════════════
+        print("\n📊 STAGE 4: Risk Assessment - Computing Composite Risk [DETERMINISTIC]...")
         
-        warehouse_crew = Crew(
-            agents=[agents["warehouse"]],
-            tasks=[warehouse_task],
-            process=Process.sequential,
-            verbose=True
-        )
+        if use_deterministic_core:
+            # Use deterministic calculation
+            risk_assessment = _compute_risk_assessment(internal_risks, external_risks)
+        else:
+            # Use LLM (for formatting only)
+            risk_input = {
+                'internal_risks': internal_risks,
+                'external_modifiers': {
+                    'external_demand_risk_modifier': external_risks.get('external_demand_risk_modifier', 0),
+                    'external_lead_time_risk_modifier': external_risks.get('external_lead_time_risk_modifier', 0)
+                }
+            }
+            risk_task = create_risk_assessment_task(agents["risk_assessment"], risk_input)
+            risk_crew = Crew(
+                agents=[agents["risk_assessment"]],
+                tasks=[risk_task],
+                process=Process.sequential,
+                verbose=True
+            )
+            risk_result = risk_crew.kickoff()
+            risk_assessment = extract_json_from_response(risk_result.raw)
+            if not risk_assessment:
+                risk_assessment = _compute_risk_assessment(internal_risks, external_risks)
         
-        warehouse_result = warehouse_crew.kickoff()
-        warehouse_signals = extract_json_from_response(warehouse_result.raw)
+        stages['risk_assessment'] = risk_assessment
+        print(f"   ✅ Risk Level: {risk_assessment.get('risk_level', 'UNKNOWN')}, "
+              f"Composite: {risk_assessment.get('composite_risk_score', 0):.2f}")
         
-        print(f"✅ Warehouse constraints assessed")
-        analysis_data['warehouse'] = warehouse_signals
-        analysis_data['signals']['warehouse_stress'] = warehouse_signals.get('warehouse_stress', 
-            analysis_data['signals']['warehouse_capacity_stress'])
+        # ════════════════════════════════════════════════════════════════════
+        # STAGE 5: POLICY AGENT [DETERMINISTIC]
+        # ════════════════════════════════════════════════════════════════════
+        print("\n📜 STAGE 5: Policy Agent - Determining Buffer Strategy [DETERMINISTIC]...")
         
-        # ========================================
-        # STAGE 4: INVENTORY DECISION
-        # ========================================
-        print("\n🎯 STAGE 4: Decision Agent - Correlating Risks...")
+        if use_deterministic_core:
+            # Use deterministic calculation
+            buffer_policy = _compute_buffer_policy(risk_assessment)
+        else:
+            # Use LLM (for formatting only)
+            policy_task = create_policy_task(agents["policy"], risk_assessment)
+            policy_crew = Crew(
+                agents=[agents["policy"]],
+                tasks=[policy_task],
+                process=Process.sequential,
+                verbose=True
+            )
+            policy_result = policy_crew.kickoff()
+            buffer_policy = extract_json_from_response(policy_result.raw)
+            if not buffer_policy or 'buffer_policy' not in buffer_policy:
+                buffer_policy = _compute_buffer_policy(risk_assessment)
         
-        decision_task = create_inventory_decision_task(
-            agents["inventory_decision"],
-            analysis_data['signals']
-        )
+        stages['buffer_policy'] = buffer_policy
+        bp = buffer_policy.get('buffer_policy', buffer_policy)
+        print(f"   ✅ Buffer Posture: {bp.get('buffer_posture', 'UNKNOWN')}, "
+              f"Philosophy: {bp.get('inventory_philosophy', 'UNKNOWN')}")
         
-        decision_crew = Crew(
-            agents=[agents["inventory_decision"]],
-            tasks=[decision_task],
-            process=Process.sequential,
-            verbose=True
-        )
+        # ════════════════════════════════════════════════════════════════════
+        # STAGE 6: WAREHOUSE AGENT [DETERMINISTIC] - Hard Constraints
+        # ════════════════════════════════════════════════════════════════════
+        print("\n🏭 STAGE 6: Warehouse Agent - Enforcing Physical Constraints [DETERMINISTIC]...")
         
-        decision_result = decision_crew.kickoff()
-        decision_output = extract_json_from_response(decision_result.raw)
+        # Extract warehouse inputs from context
+        warehouse_inputs = _extract_warehouse_inputs(context_summary, raw_answers)
         
-        print(f"✅ Decision generated: {decision_output.get('reorder_timing', 'N/A')}")
-        analysis_data['decision'] = decision_output
+        if use_deterministic_core:
+            # Use deterministic calculation
+            warehouse_assessment = _compute_warehouse_assessment(warehouse_inputs, buffer_policy)
+        else:
+            # Use LLM (for formatting only)
+            warehouse_input = {
+                'warehouse_inputs': warehouse_inputs,
+                'buffer_policy': buffer_policy.get('buffer_policy', buffer_policy)
+            }
+            warehouse_task = create_warehouse_assessment_task(agents["warehouse"], warehouse_input)
+            warehouse_crew = Crew(
+                agents=[agents["warehouse"]],
+                tasks=[warehouse_task],
+                process=Process.sequential,
+                verbose=True
+            )
+            warehouse_result = warehouse_crew.kickoff()
+            warehouse_assessment = extract_json_from_response(warehouse_result.raw)
+            if not warehouse_assessment or 'warehouse_assessment' not in warehouse_assessment:
+                warehouse_assessment = _compute_warehouse_assessment(warehouse_inputs, buffer_policy)
         
-        # ========================================
-        # STAGE 5: FINAL ORCHESTRATION
-        # ========================================
-        print("\n🎭 STAGE 5: Orchestrator - Creating Final Recommendation...")
+        stages['warehouse_assessment'] = warehouse_assessment
+        wa = warehouse_assessment.get('warehouse_assessment', warehouse_assessment)
+        print(f"   ✅ Execution Mode: {wa.get('execution_mode', 'UNKNOWN')}, "
+              f"Hard Constraint: {wa.get('hard_constraint_triggered', False)}")
+        
+        # ════════════════════════════════════════════════════════════════════
+        # STAGE 7: DECISION ORCHESTRATOR [LLM] - Final Output
+        # ════════════════════════════════════════════════════════════════════
+        print("\n🎭 STAGE 7: Decision Orchestrator - Creating Final Recommendation [LLM]...")
+        
+        # Build complete analysis for orchestrator
+        orchestrator_input = {
+            'context_summary': context_summary,
+            'external_risks': external_risks,
+            'risk_assessment': risk_assessment,
+            'buffer_policy': buffer_policy.get('buffer_policy', buffer_policy),
+            'warehouse_assessment': warehouse_assessment.get('warehouse_assessment', warehouse_assessment)
+        }
         
         orchestrator_task = create_orchestrator_task(
             agents["orchestrator"],
-            analysis_data
+            orchestrator_input
         )
         
         orchestrator_crew = Crew(
@@ -322,25 +670,372 @@ def run_full_pipeline(user_responses: dict) -> dict:
         final_result = orchestrator_crew.kickoff()
         final_output = extract_json_from_response(final_result.raw)
         
-        print("\n" + "="*60)
-        print("✅ MAESTRO PIPELINE COMPLETE")
-        print("="*60 + "\n")
+        # Validate final output has required structure
+        if not final_output or 'final_decision' not in final_output:
+            final_output = _generate_fallback_decision(stages)
         
-        # Return the final orchestrated output
+        stages['final_output'] = final_output
+        
+        print("\n" + "="*70)
+        print("✅ MAESTRO UNIFIED PIPELINE COMPLETE")
+        print("="*70)
+        fd = final_output.get('final_decision', {})
+        print(f"   Reorder Timing: {fd.get('reorder_timing', 'N/A')}")
+        print(f"   Order Strategy: {fd.get('order_strategy', 'N/A')}")
+        print(f"   Risk Level: {fd.get('risk_level', 'N/A')}")
+        print(f"   Confidence: {fd.get('confidence', 0):.2f}")
+        print("="*70 + "\n")
+        
         return {
             "success": True,
-            "pipeline_complete": True,
-            "analysis": analysis_data,
+            "pipeline": "full",
+            "raw_answers": raw_answers,
+            "stages": stages,
             "result": final_output
         }
         
     except Exception as e:
-        print(f"\n❌ Pipeline error: {str(e)}")
+        print(f"\n❌ Pipeline error at stage: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
         return {
             "success": False,
+            "pipeline": "full",
             "error": str(e),
+            "raw_answers": preserve_raw_answers(user_responses),
+            "stages": stages,
             "result": generate_mock_response(user_responses)["result"]
         }
+
+
+# =============================================================================
+# DETERMINISTIC HELPER FUNCTIONS
+# =============================================================================
+
+def _clamp_external_modifiers(external_risks: dict) -> dict:
+    """
+    Clamp external modifiers to bounds [-0.2, +0.3].
+    This is a HARD CONSTRAINT that cannot be violated.
+    """
+    if not external_risks:
+        return {
+            'external_demand_risk_modifier': 0.0,
+            'external_lead_time_risk_modifier': 0.0,
+            'external_factors': [],
+            'market_outlook': 'neutral'
+        }
+    
+    demand_mod = external_risks.get('external_demand_risk_modifier', 0)
+    lead_time_mod = external_risks.get('external_lead_time_risk_modifier', 0)
+    
+    # Clamp to bounds
+    external_risks['external_demand_risk_modifier'] = max(-0.2, min(0.3, float(demand_mod)))
+    external_risks['external_lead_time_risk_modifier'] = max(-0.2, min(0.3, float(lead_time_mod)))
+    
+    return external_risks
+
+
+def _compute_risk_assessment(internal_risks: dict, external_risks: dict) -> dict:
+    """
+    Deterministic risk assessment calculation.
+    
+    Formula:
+    - adjusted_demand = clamp(demand_risk + external_demand_modifier, 0, 1)
+    - adjusted_supplier = clamp(supplier_risk + external_lead_time_modifier, 0, 1)
+    - composite = (adjusted_demand × 0.35) + (adjusted_supplier × 0.35) + (warehouse × 0.30)
+    
+    Classification:
+    - < 0.4 → LOW
+    - < 0.7 → MODERATE
+    - ≥ 0.7 → HIGH
+    """
+    # Get internal risks
+    demand_risk = internal_risks.get('demand_risk', 0.5)
+    supplier_risk = internal_risks.get('supplier_risk', 0.5)
+    warehouse_stress = internal_risks.get('warehouse_stress', 0.5)
+    cash_risk = internal_risks.get('cash_risk', 0.5)
+    
+    # Get external modifiers
+    demand_mod = external_risks.get('external_demand_risk_modifier', 0)
+    lead_time_mod = external_risks.get('external_lead_time_risk_modifier', 0)
+    
+    # Adjust risks (clamp to 0-1)
+    adjusted_demand = max(0.0, min(1.0, demand_risk + demand_mod))
+    adjusted_supplier = max(0.0, min(1.0, supplier_risk + lead_time_mod))
+    
+    # Compute composite (warehouse_stress and cash_risk unchanged)
+    composite = (adjusted_demand * 0.35) + (adjusted_supplier * 0.35) + (warehouse_stress * 0.30)
+    
+    # Classify risk level
+    if composite < 0.4:
+        risk_level = "LOW"
+    elif composite < 0.7:
+        risk_level = "MODERATE"
+    else:
+        risk_level = "HIGH"
+    
+    return {
+        "adjusted_risks": {
+            "demand_risk": round(adjusted_demand, 2),
+            "supplier_risk": round(adjusted_supplier, 2),
+            "warehouse_stress": round(warehouse_stress, 2),
+            "cash_flow_risk": round(cash_risk, 2)
+        },
+        "composite_risk_score": round(composite, 2),
+        "risk_level": risk_level
+    }
+
+
+def _compute_buffer_policy(risk_assessment: dict) -> dict:
+    """
+    Deterministic buffer policy calculation.
+    
+    Policy Logic:
+    - LOW → MINIMAL / LEAN / 90%
+    - MODERATE → MODERATE / BALANCED / 95%
+    - HIGH → AGGRESSIVE / PROTECTIVE / 98-99%
+    
+    Cash Constraint Adjustment:
+    - If cash_flow_risk >= 0.7: Reduce buffer by one level
+    """
+    risk_level = risk_assessment.get('risk_level', 'MODERATE')
+    adjusted_risks = risk_assessment.get('adjusted_risks', {})
+    cash_risk = adjusted_risks.get('cash_flow_risk', 0.5)
+    
+    # Base policy based on risk level
+    if risk_level == "LOW":
+        buffer_posture = "MINIMAL"
+        philosophy = "LEAN"
+        service_target = "90%"
+    elif risk_level == "MODERATE":
+        buffer_posture = "MODERATE"
+        philosophy = "BALANCED"
+        service_target = "95%"
+    else:  # HIGH
+        buffer_posture = "AGGRESSIVE"
+        philosophy = "PROTECTIVE"
+        service_target = "98-99%"
+    
+    # Apply cash constraint (can only REDUCE, never increase)
+    cash_constraint_applied = False
+    if cash_risk >= 0.7:
+        cash_constraint_applied = True
+        if buffer_posture == "AGGRESSIVE":
+            buffer_posture = "MODERATE"
+            philosophy = "BALANCED"
+            service_target = "95%"
+        elif buffer_posture == "MODERATE":
+            buffer_posture = "MINIMAL"
+            philosophy = "LEAN"
+            service_target = "90%"
+        # MINIMAL stays MINIMAL
+    
+    return {
+        "buffer_policy": {
+            "risk_level": risk_level,
+            "buffer_posture": buffer_posture,
+            "inventory_philosophy": philosophy,
+            "service_level_target": service_target,
+            "cash_constraint_applied": cash_constraint_applied
+        }
+    }
+
+
+def _extract_warehouse_inputs(context_summary: dict, raw_answers: dict) -> dict:
+    """
+    Extract warehouse inputs from context summary and raw answers.
+    """
+    warehouse_summary = context_summary.get('warehouse_summary', {})
+    business_profile = context_summary.get('business_profile', {})
+    
+    # Map capacity_status to utilization estimate
+    capacity_status = warehouse_summary.get('capacity_status', 'tight')
+    status_to_utilization = {
+        'comfortable': 0.4,
+        'tight': 0.65,
+        'critical': 0.85
+    }
+    
+    # Estimate stock values (since we don't have actual numbers from onboarding)
+    # In production, this would come from actual inventory data
+    utilization = status_to_utilization.get(capacity_status.lower(), 0.65)
+    max_capacity = 100  # Normalized
+    current_stock = int(utilization * max_capacity)
+    
+    # Get perishability
+    perishability = business_profile.get('perishability', 'medium')
+    
+    # Infer storage type from business profile
+    products = business_profile.get('products', '').lower()
+    if 'flower' in products or 'fresh' in products or 'food' in products:
+        storage_type = 'refrigerated'
+    elif 'frozen' in products or 'ice' in products:
+        storage_type = 'cold'
+    else:
+        storage_type = 'ambient'
+    
+    return {
+        'current_stock': current_stock,
+        'max_capacity': max_capacity,
+        'storage_type': storage_type,
+        'perishability': perishability.lower()
+    }
+
+
+def _compute_warehouse_assessment(warehouse_inputs: dict, buffer_policy: dict) -> dict:
+    """
+    Deterministic warehouse assessment calculation.
+    
+    Process:
+    1. Compute utilization = current_stock / max_capacity
+    2. Classify stress: <0.5 LOW, 0.5-0.75 MEDIUM, ≥0.75 HIGH
+    3. HIGH stress → SPLIT_DELIVERIES (hard constraint)
+    4. High perishability → DAILY frequency
+    
+    WAREHOUSE CONSTRAINTS ARE NON-NEGOTIABLE.
+    """
+    current_stock = warehouse_inputs.get('current_stock', 50)
+    max_capacity = warehouse_inputs.get('max_capacity', 100)
+    perishability = warehouse_inputs.get('perishability', 'medium')
+    
+    # Compute utilization
+    utilization = current_stock / max_capacity if max_capacity > 0 else 0.5
+    
+    # Classify capacity stress
+    if utilization < 0.5:
+        capacity_stress = "LOW"
+    elif utilization < 0.75:
+        capacity_stress = "MEDIUM"
+    else:
+        capacity_stress = "HIGH"
+    
+    # Determine execution mode (HARD CONSTRAINT)
+    hard_constraint_triggered = False
+    if utilization >= 0.75:
+        execution_mode = "SPLIT_DELIVERIES"
+        hard_constraint_triggered = True
+        max_fill_guideline = "Do not exceed 85% capacity at any time"
+    elif perishability == "high":
+        execution_mode = "SPLIT_DELIVERIES"
+        max_fill_guideline = "Fresh goods require frequent turnover"
+    else:
+        execution_mode = "BULK_ALLOWED"
+        max_fill_guideline = "Standard capacity guidelines apply"
+    
+    # Determine preferred frequency
+    if perishability == "high":
+        preferred_frequency = "DAILY"
+    elif utilization >= 0.75:
+        preferred_frequency = "2-3x weekly"
+    elif utilization >= 0.5:
+        preferred_frequency = "weekly"
+    else:
+        preferred_frequency = "biweekly"
+    
+    return {
+        "warehouse_assessment": {
+            "warehouse_utilization": round(utilization, 2),
+            "capacity_stress": capacity_stress,
+            "execution_mode": execution_mode,
+            "preferred_frequency": preferred_frequency,
+            "max_fill_guideline": max_fill_guideline,
+            "hard_constraint_triggered": hard_constraint_triggered
+        }
+    }
+
+
+def _generate_default_context_summary(raw_answers: dict) -> dict:
+    """
+    Generate a default context summary if Router Agent fails.
+    """
+    return {
+        "business_profile": {
+            "industry": "retail",
+            "products": raw_answers.get('q1', 'general goods'),
+            "scale": "medium",
+            "perishability": "medium"
+        },
+        "demand_summary": {
+            "pattern": "stable",
+            "drivers": [],
+            "risk_level": "medium"
+        },
+        "supplier_summary": {
+            "reliability": "medium",
+            "delay_frequency": "occasional",
+            "risk_level": "medium"
+        },
+        "warehouse_summary": {
+            "capacity_status": "tight",
+            "constraint_level": "medium"
+        },
+        "financial_summary": {
+            "cash_flow_sensitivity": "medium"
+        },
+        "operational_summary": {
+            "system_maturity": "manual",
+            "key_gaps": []
+        },
+        "primary_business_goal": raw_answers.get('q10', 'optimize inventory'),
+        "overall_context_narrative": "Business context extracted from onboarding answers."
+    }
+
+
+def _generate_fallback_decision(stages: dict) -> dict:
+    """
+    Generate a fallback decision if Orchestrator Agent fails.
+    Uses outputs from previous stages to construct a valid response.
+    """
+    risk_assessment = stages.get('risk_assessment', {})
+    warehouse_assessment = stages.get('warehouse_assessment', {})
+    buffer_policy = stages.get('buffer_policy', {})
+    
+    risk_level = risk_assessment.get('risk_level', 'MODERATE')
+    wa = warehouse_assessment.get('warehouse_assessment', warehouse_assessment)
+    bp = buffer_policy.get('buffer_policy', buffer_policy)
+    
+    # Determine reorder timing from risk level
+    timing_map = {'HIGH': 'EARLY', 'MODERATE': 'NORMAL', 'LOW': 'DELAYED'}
+    reorder_timing = timing_map.get(risk_level, 'NORMAL')
+    
+    # Get order strategy from warehouse
+    order_strategy = wa.get('execution_mode', 'SPLIT_DELIVERIES')
+    
+    # Confidence based on risk level
+    confidence_map = {'HIGH': 0.80, 'MODERATE': 0.68, 'LOW': 0.58}
+    confidence = confidence_map.get(risk_level, 0.68)
+    
+    return {
+        "final_decision": {
+            "reorder_timing": reorder_timing,
+            "order_strategy": order_strategy,
+            "risk_level": risk_level,
+            "confidence": confidence
+        },
+        "what_we_understood": {
+            "demand_situation": "Demand pattern analyzed from your inputs",
+            "supplier_situation": "Supplier reliability assessed",
+            "warehouse_situation": f"Storage at {wa.get('warehouse_utilization', 0.5)*100:.0f}% capacity",
+            "key_constraint": "Warehouse capacity" if wa.get('hard_constraint_triggered') else "Risk management"
+        },
+        "detected_risks": [
+            {
+                "risk": "Overall Risk",
+                "level": risk_level,
+                "explanation": f"Composite risk assessment indicates {risk_level.lower()} risk level"
+            }
+        ],
+        "why_this_decision": f"Based on your {risk_level.lower()} risk profile and {bp.get('buffer_posture', 'moderate').lower()} buffer strategy, we recommend {reorder_timing.lower()} reordering with {order_strategy.lower().replace('_', ' ')}.",
+        "immediate_actions": [
+            "Review current stock levels",
+            "Contact suppliers for delivery scheduling",
+            "Set up reorder alerts",
+            "Monitor inventory weekly",
+            "Track sales patterns"
+        ],
+        "warnings": ["Warehouse constraint active - avoid bulk orders"] if wa.get('hard_constraint_triggered') else []
+    }
 
 
 def run_quick_analysis(user_responses: dict) -> dict:
@@ -396,10 +1091,10 @@ def quick_decision_from_signals(signals: dict) -> dict:
     """
     Generate a quick decision from intake signals without full pipeline.
     """
-    demand = signals.get('demand_variability', 0.5)
-    supplier = signals.get('supplier_delay_risk', 0.5)
-    warehouse = signals.get('warehouse_capacity_stress', 0.5)
-    cash = signals.get('cash_flow_sensitivity', 0.5)
+    demand = signals.get('demand_risk', 0.5)
+    supplier = signals.get('supplier_risk', 0.5)
+    warehouse = signals.get('warehouse_stress', 0.5)
+    cash = signals.get('cash_risk', 0.5)
     
     composite = (demand + supplier + warehouse + cash) / 4
     

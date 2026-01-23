@@ -1,5 +1,6 @@
 const axios = require('axios');
 const config = require('../config');
+const dataService = require('./dataService');
 
 /**
  * Agent Service Client
@@ -114,21 +115,51 @@ class AgentServiceClient {
    * Sends business inputs to the FastAPI service and receives
    * a structured inventory decision without LLM calls.
    * 
+   * NOW ENHANCED: Fetches live business state from MongoDB and 
+   * attaches it to the agent payload for data-driven decisions.
+   * 
    * @param {Object} payload - Inventory decision request
    * @param {string} payload.demand_type - "steady" | "seasonal" | "volatile"
    * @param {boolean} payload.seasonal_event - Whether seasonal event is expected
    * @param {string} payload.supplier_delay - "none" | "minor" | "frequent" | "major"
    * @param {boolean} payload.external_disruption - Whether external disruption exists
-   * @param {number} payload.current_stock - Current inventory level (units)
-   * @param {number} payload.max_capacity - Maximum warehouse capacity (units)
+   * @param {number} payload.current_stock - Current inventory level (units) - OPTIONAL if business_state available
+   * @param {number} payload.max_capacity - Maximum warehouse capacity (units) - OPTIONAL if business_state available
    * @param {string} payload.cash_flow - "healthy" | "tight" | "critical"
+   * @param {string} payload.business_id - Business ID for fetching live data (optional)
    * @returns {Promise<Object>} Decision response with final_decision, explanation, confidence
    * @throws {Error} Descriptive error if request fails
    */
   async callInventoryDecisionAgent(payload) {
     try {
+      // ========================================
+      // FETCH LIVE BUSINESS STATE
+      // ========================================
+      let businessState = null;
+      const businessId = payload.business_id || 'demo-business';
+      
+      try {
+        console.log(`📊 Fetching live business state for: ${businessId}`);
+        businessState = await dataService.getBusinessState(businessId);
+        console.log('✅ Business state retrieved:', {
+          hasDemandData: businessState.demand_snapshot?.record_count > 0,
+          hasWarehouseData: businessState.warehouse_snapshot?.current_stock !== null,
+          hasSupplierData: businessState.supplier_snapshot?.record_count > 0,
+        });
+      } catch (stateError) {
+        console.warn('⚠️ Could not fetch business state, using payload defaults:', stateError.message);
+      }
+      
+      // ========================================
+      // BUILD ENHANCED PAYLOAD
+      // ========================================
+      const enhancedPayload = {
+        ...payload,
+        business_state: businessState,
+      };
+      
       // POST to the deterministic decision endpoint
-      const response = await this.client.post('/process-inventory-decision', payload);
+      const response = await this.client.post('/process-inventory-decision', enhancedPayload);
       
       // Return the response data directly (no transformation)
       return response.data;

@@ -56,6 +56,24 @@ export const apiService = {
     const response = await api.get(`/api/session/${sessionId}`);
     return response.data;
   },
+
+  // Get aggregated business state (READ-ONLY)
+  async getBusinessState(businessId) {
+    const response = await api.get(`/api/data/business-state/${businessId}`);
+    return response.data;
+  },
+
+  // Get decision history for a business (READ-ONLY)
+  async getDecisionHistory(businessId, limit = 5) {
+    const response = await api.get(`/api/decisions/${businessId}?limit=${limit}`);
+    return response.data;
+  },
+
+  // Update decision outcome (GOOD/BAD/UNKNOWN)
+  async updateDecisionOutcome(decisionId, outcome) {
+    const response = await api.patch(`/api/decisions/${decisionId}/outcome`, { outcome });
+    return response.data;
+  },
 };
 
 /**
