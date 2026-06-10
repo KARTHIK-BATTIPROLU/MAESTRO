@@ -1,42 +1,40 @@
 services:
-  # Backend Service
+  # ─── Agent Service (Python / FastAPI) ────────────────────────────────────────
   - type: web
-    name: mostro-backend
+    name: maestro-agent-service
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: cd agent-service && pip install -r requirements.txt
+    startCommand: cd agent-service && uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: MODEL_NAME
+        value: gemini-1.5-flash
+      - key: PYTHONIOENCODING
+        value: utf-8
+
+  # ─── Backend (Node.js / Express) ─────────────────────────────────────────────
+  - type: web
+    name: maestro-backend
     runtime: node
-    buildCommand: cd backend && npm install
+    region: oregon
+    plan: free
+    buildCommand: cd backend && npm install --production
     startCommand: cd backend && npm start
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 5000
       - key: MONGODB_URI
         sync: false
       - key: AGENT_SERVICE_URL
         fromService:
           type: web
-          name: mostro-agent-service
+          name: maestro-agent-service
           property: host
-
-  # Agent Service
-  - type: web
-    name: mostro-agent-service
-    runtime: python
-    buildCommand: cd agent-service && pip install -r requirements.txt
-    startCommand: cd agent-service && uvicorn main:app --host 0.0.0.0 --port 8000
-    envVars:
-      - key: GEMINI_API_KEY
+      # Set this to your Netlify URL after first deploy, e.g. https://maestro-app.netlify.app
+      - key: CORS_ORIGINS
         sync: false
-
-  # Frontend Service
-  - type: web
-    name: mostro-frontend
-    runtime: node
-    buildCommand: cd frontend && npm install && npm run build
-    staticPublishPath: frontend/dist
-    envVars:
-      - key: VITE_API_URL
-        fromService:
-          type: web
-          name: mostro-backend
-          property: host

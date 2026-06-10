@@ -20,14 +20,29 @@ HARD CONSTRAINT PRIORITY:
 - Cash risk can REDUCE buffer, never increase it
 - External modifiers bounded to [-0.2, +0.3]
 """
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
+import sys
+import io
+# Force UTF-8 stdout/stderr so emoji print() works on Windows (cp1252 default)
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+else:
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from contextlib import asynccontextmanager
+from pydantic import BaseModel, field_validator
 from typing import Optional, Dict, Any, List
 import uvicorn
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
+import time
+import signal
+import asyncio
 
 from config import Config
 from questions import get_all_questions, get_question
@@ -37,12 +52,42 @@ from orchestrator import (
     generate_mock_response,
     run_maestro_pipeline
 )
+from resilience import (
+    logger,
+    gemini_circuit,
+    agent_pipeline_circuit,
+    retry_sync,
+    CircuitOpenError,
+    RequestContext,
+    degraded_response,
+)
+
+# ─── LIFESPAN ──────────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Handle startup and graceful shutdown."""
+    # --- Startup ---
+    logger.info("MAESTRO Agent Service starting")
+    if not Config.GOOGLE_API_KEY:
+        logger.warning("Neither GEMINI_API_KEY nor GOOGLE_API_KEY is set — LLM pipelines unavailable")
+    else:
+        logger.info("GEMINI_API_KEY configured — LLM pipelines enabled")
+    yield
+    # --- Shutdown ---
+    global _shutting_down
+    _shutting_down = True
+    logger.info("Graceful shutdown initiated — draining in-flight requests")
+    await asyncio.sleep(2)
+    logger.info("Shutdown complete")
+
 
 # Initialize FastAPI app
 app = FastAPI(
     title="MAESTRO Agent Service",
     description="MSME Inventory Intelligence System - AI-powered inventory optimization",
-    version="2.0.0"
+    version="2.0.0",
+    lifespan=lifespan,
 )
 
 # Enable CORS
@@ -56,6 +101,52 @@ app.add_middleware(
 
 # In-memory session storage (use Redis in production)
 sessions: Dict[str, Dict[str, Any]] = {}
+
+# Shutdown flag for graceful termination
+_shutting_down = False
+
+
+# ─── MIDDLEWARE ────────────────────────────────────────────────────────────────
+
+@app.middleware("http")
+async def request_lifecycle_middleware(request: Request, call_next):
+    """Attach request-id, measure latency, log every request."""
+    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4())[:8])
+    start = time.monotonic()
+
+    # Reject during shutdown
+    if _shutting_down:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Service is shutting down"},
+            headers={"Retry-After": "30"},
+        )
+
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        duration_ms = round((time.monotonic() - start) * 1000, 1)
+        logger.error(
+            f"{request.method} {request.url.path} → 500 ({duration_ms}ms)",
+            extra={"request_id": request_id, "duration_ms": duration_ms},
+            exc_info=True,
+        )
+        return JSONResponse(status_code=500, content={"error": "Internal server error"})
+
+    duration_ms = round((time.monotonic() - start) * 1000, 1)
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Response-Time-Ms"] = str(duration_ms)
+
+    logger.info(
+        f"{request.method} {request.url.path} → {response.status_code} ({duration_ms}ms)",
+        extra={
+            "request_id": request_id,
+            "duration_ms": duration_ms,
+            "status_code": response.status_code,
+        },
+    )
+    return response
+
 
 # Pydantic models
 class StartSessionRequest(BaseModel):
@@ -172,12 +263,34 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Detailed health check"""
-    return {
-        "status": "healthy",
-        "llm_configured": bool(Config.GOOGLE_API_KEY),
-        "timestamp": datetime.utcnow().isoformat()
+    """Deep health check with dependency status."""
+    circuits = {
+        "gemini_api": gemini_circuit.to_health(),
+        "agent_pipeline": agent_pipeline_circuit.to_health(),
     }
+    all_circuits_ok = all(
+        c["state"] != "OPEN" for c in circuits.values()
+    )
+    overall = "healthy" if all_circuits_ok else "degraded"
+    return {
+        "status": overall,
+        "llm_configured": bool(Config.GOOGLE_API_KEY),
+        "circuits": circuits,
+        "active_sessions": len(sessions),
+        "shutting_down": _shutting_down,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/ready")
+async def readiness_check():
+    """Kubernetes-style readiness probe. Returns 503 if not ready."""
+    if _shutting_down:
+        return JSONResponse(status_code=503, content={"ready": False})
+    if not Config.GOOGLE_API_KEY:
+        # Still ready for deterministic pipeline
+        return {"ready": True, "mode": "deterministic-only"}
+    return {"ready": True, "mode": "full"}
 
 
 # =============================================================================
@@ -227,8 +340,11 @@ async def process_inventory_decision(request: InventoryDecisionRequest):
             "business_state": { ... }
         }
     """
+    ctx = RequestContext(
+        request_id=str(uuid.uuid4())[:8],
+        pipeline="deterministic",
+    )
     try:
-        # Convert Pydantic model to dictionary for pipeline
         input_context = {
             "demand_type": request.demand_type,
             "seasonal_event": request.seasonal_event,
@@ -239,21 +355,37 @@ async def process_inventory_decision(request: InventoryDecisionRequest):
             "cash_flow": request.cash_flow,
             "business_state": request.business_state,
         }
-        
-        # Run the deterministic MAESTRO pipeline
-        result = run_maestro_pipeline(input_context)
-        
-        # Return successful result
+
+        # Deterministic pipeline — no LLM, but protect via circuit breaker
+        result = retry_sync(
+            run_maestro_pipeline,
+            input_context,
+            max_attempts=2,
+            base_delay=0.5,
+            circuit=agent_pipeline_circuit,
+        )
+
+        logger.info(
+            f"Deterministic pipeline completed in {ctx.elapsed_ms}ms",
+            extra=ctx.log_extras(),
+        )
         return result
-        
+
+    except CircuitOpenError:
+        logger.warning("Pipeline circuit OPEN — returning degraded response", extra=ctx.log_extras())
+        raise HTTPException(
+            status_code=503,
+            detail="Service temporarily unavailable. Please retry in 60 seconds.",
+        )
     except Exception as e:
-        # Log error for debugging (in production, use proper logging)
-        print(f"❌ Error in /process-inventory-decision: {str(e)}")
-        
-        # Return safe error response
+        logger.error(
+            f"Deterministic pipeline failed: {e}",
+            extra=ctx.log_extras(),
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=500,
-            detail="An error occurred while processing your inventory decision. Please try again."
+            detail="An error occurred while processing your inventory decision. Please try again.",
         )
 
 
@@ -326,31 +458,48 @@ async def process_unified_pipeline(request: UnifiedPipelineRequest):
             }
         }
     """
+    ctx = RequestContext(
+        request_id=str(uuid.uuid4())[:8],
+        pipeline="unified",
+    )
     try:
-        # Prepare user_responses from either format
         if request.answers:
-            # Option 1: Direct onboarding answers
             user_responses = request.answers
         else:
-            # Option 2: Convert structured inputs to q1-q10 format
             user_responses = _convert_structured_to_answers(request)
-        
-        # Run the unified pipeline
+
         result = run_full_pipeline(
             user_responses=user_responses,
-            use_deterministic_core=request.use_deterministic_core
+            use_deterministic_core=request.use_deterministic_core,
         )
-        
+
+        logger.info(
+            f"Unified pipeline completed in {ctx.elapsed_ms}ms",
+            extra=ctx.log_extras(),
+        )
         return result
-        
+
+    except CircuitOpenError:
+        logger.warning("Gemini circuit OPEN — falling back to deterministic", extra=ctx.log_extras())
+        # Graceful degradation: fall back to deterministic-only if LLM is down
+        user_responses = request.answers or _convert_structured_to_answers(request)
+        fallback = run_full_pipeline(
+            user_responses=user_responses,
+            use_deterministic_core=True,
+        )
+        fallback["degraded"] = True
+        fallback["degraded_reason"] = "LLM service unavailable — used deterministic fallback"
+        return fallback
+
     except Exception as e:
-        print(f"❌ Error in /process-unified: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        
+        logger.error(
+            f"Unified pipeline failed: {e}",
+            extra=ctx.log_extras(),
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"Pipeline error: {str(e)}"
+            detail=f"Pipeline error: {str(e)}",
         )
 
 

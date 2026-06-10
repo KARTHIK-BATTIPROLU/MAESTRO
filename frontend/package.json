@@ -1,5 +1,5 @@
 {
-  "name": "mostro-frontend",
+  "name": "maestro-frontend",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -13,6 +13,7 @@
     "axios": "^1.6.2",
     "framer-motion": "^10.16.16",
     "lucide-react": "^0.303.0",
+    "prop-types": "^15.8.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-markdown": "^9.0.1",

@@ -1,18 +1,19 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import PropTypes from 'prop-types';
 import { 
   Send, 
   Package, 
   Bot, 
   User, 
   ArrowLeft,
-  Loader2,
-  CheckCircle2
+  Loader2
 } from 'lucide-react';
 import apiService from '../services/api';
 import { aggregateContext, deriveDecisionPayload } from '../utils/contextAggregator';
 
+// eslint-disable-next-line no-unused-vars
 const OnboardingPage = ({ sessionData, setSessionData, setResults }) => {
   const navigate = useNavigate();
   const [messages, setMessages] = useState([]);
@@ -38,6 +39,7 @@ const OnboardingPage = ({ sessionData, setSessionData, setResults }) => {
   // Initialize session on mount
   useEffect(() => {
     initializeSession();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const initializeSession = async () => {
@@ -160,6 +162,7 @@ const OnboardingPage = ({ sessionData, setSessionData, setResults }) => {
     setUserInput(option);
   };
 
+  // eslint-disable-next-line no-unused-vars
   const processWithAgents = async () => {
     setIsProcessing(true);
     addMessage('bot', "🚀 Now running your data through our AI inventory agent. This may take a minute...");
@@ -174,7 +177,7 @@ const OnboardingPage = ({ sessionData, setSessionData, setResults }) => {
         navigate('/dashboard', { 
           state: { 
             results: result,
-            businessName: sessions?.answers?.business_context || 'Your Business'
+            businessName: userAnswers?.q1 || 'Your Business'
           } 
         });
       }, 2000);
@@ -368,6 +371,12 @@ const OnboardingPage = ({ sessionData, setSessionData, setResults }) => {
       </main>
     </div>
   );
+};
+
+OnboardingPage.propTypes = {
+  sessionData: PropTypes.object,
+  setSessionData: PropTypes.func,
+  setResults: PropTypes.func,
 };
 
 export default OnboardingPage;

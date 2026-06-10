@@ -448,7 +448,7 @@ def run_full_pipeline(user_responses: dict, use_deterministic_core: bool = True)
     llm = None
     if Config.GOOGLE_API_KEY:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
+            model=Config.MODEL_NAME,
             google_api_key=Config.GOOGLE_API_KEY,
             temperature=0.2  # Lower temperature for more consistent outputs
         )
@@ -1048,7 +1048,7 @@ def run_quick_analysis(user_responses: dict) -> dict:
     llm = None
     if Config.GOOGLE_API_KEY:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
+            model=Config.MODEL_NAME,
             google_api_key=Config.GOOGLE_API_KEY,
             temperature=0.3
         )

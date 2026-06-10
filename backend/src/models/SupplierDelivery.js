@@ -98,12 +98,10 @@ supplierDeliverySchema.index({ supplier_id: 1, order_date: -1 });
 /**
  * Pre-save hook: Validate delivery_date >= order_date
  */
-supplierDeliverySchema.pre('save', function(next) {
+supplierDeliverySchema.pre('save', function() {
   if (this.delivery_date < this.order_date) {
-    const error = new Error('Delivery date cannot be before order date');
-    next(error);
+    throw new Error('Delivery date cannot be before order date');
   }
-  next();
 });
 
 /**

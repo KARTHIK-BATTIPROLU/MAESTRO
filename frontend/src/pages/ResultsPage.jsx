@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
+import PropTypes from 'prop-types';
 import {
   Package,
-  ArrowLeft,
   Download,
   Share2,
   AlertTriangle,
@@ -23,7 +23,7 @@ import {
   Calculator
 } from 'lucide-react';
 
-const ResultsPage = ({ results, sessionData }) => {
+const ResultsPage = ({ results, sessionData: _sessionData }) => {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('recommendation');
   const [expandedSections, setExpandedSections] = useState({});
@@ -414,6 +414,11 @@ const ResultsPage = ({ results, sessionData }) => {
       </footer>
     </div>
   );
+};
+
+ResultsPage.propTypes = {
+  results: PropTypes.object,
+  sessionData: PropTypes.object,
 };
 
 export default ResultsPage;

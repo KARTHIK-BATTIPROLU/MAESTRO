@@ -1,6 +1,7 @@
 const axios = require('axios');
 const config = require('../config');
 const dataService = require('./dataService');
+const { retryWithBackoff, agentServiceCircuit } = require('./resilience');
 
 /**
  * Agent Service Client
@@ -19,14 +20,24 @@ class AgentServiceClient {
   }
 
   /**
-   * Health check for agent service
+   * Health check for agent service (with circuit breaker awareness)
    */
   async healthCheck() {
     try {
-      const response = await this.client.get('/health');
-      return response.data;
+      const response = await retryWithBackoff(
+        () => this.client.get('/health'),
+        { maxAttempts: 2, baseDelayMs: 500, circuit: agentServiceCircuit }
+      );
+      return {
+        ...response.data,
+        circuit: agentServiceCircuit.toHealth(),
+      };
     } catch (error) {
-      throw new Error(`Agent service health check failed: ${error.message}`);
+      return {
+        status: 'unavailable',
+        error: error.message,
+        circuit: agentServiceCircuit.toHealth(),
+      };
     }
   }
 
@@ -158,8 +169,11 @@ class AgentServiceClient {
         business_state: businessState,
       };
       
-      // POST to the deterministic decision endpoint
-      const response = await this.client.post('/process-inventory-decision', enhancedPayload);
+      // POST to the deterministic decision endpoint (with retry + circuit breaker)
+      const response = await retryWithBackoff(
+        () => this.client.post('/process-inventory-decision', enhancedPayload),
+        { maxAttempts: 3, baseDelayMs: 1000, circuit: agentServiceCircuit }
+      );
       
       // Return the response data directly (no transformation)
       return response.data;

@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { runInventoryDecision, apiService } from '../services/api';
 import { aggregateContext, deriveDecisionPayload } from '../utils/contextAggregator';
 
@@ -12,15 +12,19 @@ import { aggregateContext, deriveDecisionPayload } from '../utils/contextAggrega
  */
 const DashboardPage = () => {
   const location = useLocation();
+  const navigate = useNavigate();
   const [businessName, setBusinessName] = useState('Your Business');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+  // eslint-disable-next-line no-unused-vars
   const [sessionId, setSessionId] = useState(null);
   
-  // Onboarding answers from session
+  // Onboarding answers from session (kept in state for context display)
+  // eslint-disable-next-line no-unused-vars
   const [sessionAnswers, setSessionAnswers] = useState(null);
   
   // Aggregated context
+  // eslint-disable-next-line no-unused-vars
   const [msmeContext, setMsmeContext] = useState(null);
   
   // Derived decision payload
@@ -84,6 +88,7 @@ const DashboardPage = () => {
   const [expandedHistoryItem, setExpandedHistoryItem] = useState(null);
   
   // Get results from navigation state or localStorage
+  // eslint-disable-next-line no-unused-vars
   const [results, setResults] = useState(() => {
     // Try to get from navigation state first
     if (location.state?.results) {
@@ -395,12 +400,14 @@ const DashboardPage = () => {
     };
 
     loadSession();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /**
    * Handle running the inventory decision API manually
    * (for re-running with same or updated context)
    */
+  // eslint-disable-next-line no-unused-vars
   const handleRunDecision = async () => {
     if (!decisionPayload) {
       setError('No decision payload available');
@@ -1027,7 +1034,7 @@ const DashboardPage = () => {
               <div className="flex items-center justify-between pt-2 border-t border-gray-700">
                 <div className="text-xs text-gray-500 uppercase">Confidence</div>
                 <div className="text-xl text-cyan-400 font-bold">
-                  {decisionResult.final_decision?.confidence || 0}%
+                  {Math.round((decisionResult.final_decision?.confidence || 0) * 100)}%
                 </div>
               </div>
             </div>
@@ -1236,7 +1243,7 @@ const DashboardPage = () => {
                                     : 'bg-gray-700/50 text-gray-400 hover:bg-red-500/20 hover:text-red-300'
                                 }`}
                               >
-                                👎 Didn't
+                                👎 Didn&apos;t
                               </button>
                               <button
                                 onClick={(e) => {

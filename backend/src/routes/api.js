@@ -1,30 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const agentService = require('../services/agentService');
+const { agentServiceCircuit } = require('../services/resilience');
 const dataRoutes = require('./dataRoutes');
 const { DecisionSnapshot } = require('../models');
 
-/**
- * @route   GET /api/health
- * @desc    Health check for the backend and agent service
- */
-router.get('/health', async (req, res) => {
-  try {
-    const agentHealth = await agentService.healthCheck();
-    res.json({
-      backend: 'healthy',
-      agentService: agentHealth,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.json({
-      backend: 'healthy',
-      agentService: 'unavailable',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
+// Note: /api/health is handled in server.js directly for lightweight uptime monitoring
 
 /**
  * @route   GET /api/questions

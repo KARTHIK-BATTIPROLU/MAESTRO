@@ -1,5 +1,5 @@
 /**
- * MOSTRO Backend Server
+ * MAESTRO Backend Server
  * Express.js API Gateway
  */
 
@@ -26,6 +26,11 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
+// Lightweight health check for uptime monitoring (bypasses rate limiting and logging)
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -48,7 +53,7 @@ if (config.nodeEnv === 'development') {
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({
-    name: 'MOSTRO Backend API',
+    name: 'MAESTRO Backend API',
     version: '1.0.0',
     status: 'running',
     endpoints: {
@@ -86,6 +91,9 @@ app.use((err, req, res, next) => {
 const PORT = config.port;
 
 async function startServer() {
+  // Validate configuration before anything else
+  config.validateConfig();
+
   // Connect to MongoDB first (if configured)
   if (config.dbEnabled) {
     try {
@@ -103,17 +111,32 @@ async function startServer() {
     console.log(`
 ╔══════════════════════════════════════════════════════════════╗
 ║                                                              ║
-║   🚀 MOSTRO Backend Server                                   ║
+║   🚀 MAESTRO Backend Server                                  ║
 ║                                                              ║
-║   Server running on: http://localhost:${PORT}                   ║
-║   Environment: ${config.nodeEnv.padEnd(10)}                              ║
-║   Agent Service: ${config.agentServiceUrl}               ║
-║   Database: ${config.dbEnabled ? 'Connected' : 'Disabled'}                                    ║
+║   Server:   http://localhost:${PORT}                            ║
+║   Env:      ${config.nodeEnv.padEnd(10)}                                    ║
+║   Agent:    ${config.agentServiceUrl.slice(0, 40).padEnd(40)} ║
+║   Database: ${config.dbEnabled ? 'Connected ✅' : 'Disabled ⚠️ '}                               ║
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝
     `);
   });
 }
+
+// ─── Graceful Shutdown ──────────────────────────────────────────────────
+
+function gracefulShutdown(signal) {
+  console.log(`\n${signal} received — shutting down gracefully`);
+  // Give in-flight requests 5 seconds to finish
+  setTimeout(() => {
+    console.log('Forcing shutdown after timeout');
+    process.exit(1);
+  }, 5000);
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 startServer();
 

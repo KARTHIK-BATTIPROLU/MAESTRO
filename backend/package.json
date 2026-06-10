@@ -1,7 +1,7 @@
 {
-  "name": "mostro-backend",
+  "name": "maestro-backend",
   "version": "1.0.0",
-  "description": "MOSTRO Backend API Gateway",
+  "description": "MAESTRO Backend API Gateway",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
