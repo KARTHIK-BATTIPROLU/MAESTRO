@@ -15,6 +15,9 @@ const { connectDB } = require('./db/connection');
 // Initialize Express app
 const app = express();
 
+// Trust reverse proxy (required for Render & express-rate-limit)
+app.set('trust proxy', 1);
+
 // Security middleware
 app.use(helmet());
 
