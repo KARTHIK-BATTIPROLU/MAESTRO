@@ -1,2 +1,2 @@
-/* Catch-all: send every unmatched request to index.html for React Router */
+# Catch-all: send every unmatched request to index.html for React Router
 /*    /index.html    200
