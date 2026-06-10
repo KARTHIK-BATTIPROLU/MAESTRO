@@ -10,7 +10,8 @@ const config = {
   agentServiceUrl: (() => {
     const raw = process.env.AGENT_SERVICE_URL || 'http://localhost:8000';
     if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
-    return `https://${raw}`;
+    // Render internal hostnames (e.g. service-name:10000) use HTTP, not HTTPS
+    return `http://${raw}`;
   })(),
 
   // CORS configuration
