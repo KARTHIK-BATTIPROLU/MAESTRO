@@ -15,9 +15,11 @@ const config = {
   })(),
 
   // CORS configuration
-  corsOrigins: process.env.CORS_ORIGINS
-    ? process.env.CORS_ORIGINS.split(',').map(s => s.trim())
-    : ['http://localhost:5173', 'http://localhost:3000'],
+  corsOrigins: [
+    'https://maestro-msme.netlify.app',
+    'http://localhost:5173',
+    'http://localhost:3000'
+  ],
 
   // MongoDB configuration
   mongodbUri: process.env.MONGODB_URI || null,
